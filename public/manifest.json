@@ -1,0 +1,9 @@
+{
+  "name": "edge writer — 설정 감수실",
+  "short_name": "edge writer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAF8F3",
+  "theme_color": "#6B1A2A",
+  "icons": []
+}
