@@ -277,3 +277,21 @@ input, textarea { font-family: var(--sans); color: var(--ink); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ── v1.1: 재감수 ── */
+.btn.recheck { background: transparent; border-color: var(--burgundy); color: var(--burgundy); }
+.btn.recheck:hover:not(:disabled) { background: var(--burgundy); color: #fff; }
+.btn.recheck:disabled { border-color: var(--line); color: var(--muted); cursor: default; }
+.recheck-hint { font-size: 12px; color: var(--muted); }
+
+.score-delta { display: block; font-family: var(--sans); font-size: 12px; margin-top: 2px; }
+.score-delta.up { color: var(--pass); }
+.score-delta.down { color: var(--red); }
+
+.issue.prev-ok { border-left-color: var(--pass); }
+.issue.prev-half { border-left-color: var(--amber); }
+.issue.prev-no { border-left-color: var(--red); }
+.prev-state { font-size: 12px; font-weight: 700; padding: 1px 8px; border: 1px solid currentColor; }
+.prev-state.s-해결 { color: var(--pass); }
+.prev-state.s-부분해결 { color: var(--amber); }
+.prev-state.s-미해결 { color: var(--red); }

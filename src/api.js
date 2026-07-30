@@ -4,10 +4,27 @@
 const API_URL = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-sonnet-4-6'
 
-function buildSystemPrompt(work) {
+function buildSystemPrompt(work, prevReview) {
   const timeline = work.timeline.length
     ? work.timeline.join('\n')
     : '(아직 확정된 회차 없음 — 이번 원고가 첫 감수 대상)'
+
+  const prevSection = prevReview
+    ? `
+=== 재감수 모드 ===
+아래는 같은 회차의 직전 감수 리포트다. 이번 원고는 이 리포트를 반영해 수정된 개정고이다.
+1) 직전 지적사항 각각이 해결됐는지 "이전지적처리" 배열로 판정한다 (해결/부분해결/미해결).
+2) 이미 해결된 지적을 새 지적으로 중복 제기하지 않는다.
+3) 수정 과정에서 새로 생긴 문제가 있으면 해당 카테고리에 신규 지적으로 올린다.
+
+--- 직전 리포트 (${prevReview.episode}, 점수 ${prevReview.report?.점수 ?? '-'}) ---
+${JSON.stringify(prevReview.report, null, 1).slice(0, 6000)}
+`
+    : ''
+
+  const prevField = prevReview
+    ? `\n  "이전지적처리": [{"지적": "직전 지적 요지(20자 내)", "처리": "해결|부분해결|미해결", "코멘트": ""}],`
+    : ''
 
   return `당신은 1인 창작 기업 HANOK의 웹소설 설정 감수 담당 AI 직원이다.
 아래 작품의 설정 문서 3종과 확정 타임라인을 절대 기준으로 삼아, 투입된 회차 원고를 감수한다.
@@ -26,7 +43,7 @@ ${work.docs.characters}
 
 --- 확정 타임라인 (이미 발행/확정된 회차의 사실) ---
 ${timeline}
-
+${prevSection}
 === 감수 체크리스트 ===
 1. 설정오류: 세계관 규칙 위반 (예: 아틀라스가 음성으로 말함, 등급제 규칙 모순, 조기 반전 노출 등)
 2. 인물불일치: 말버릇·성격·관계·아크 단계 위반, 타임라인과 어긋나는 시계열 오류
@@ -42,7 +59,7 @@ ${timeline}
 
 {
   "총평": "3~4문장 종합 평가",
-  "점수": 0~100 정수,
+  "점수": 0~100 정수,${prevField}
   "설정오류": [{"심각도": "", "대목": "", "지적": "", "수정제안": ""}],
   "인물불일치": [{"심각도": "", "대목": "", "지적": "", "수정제안": ""}],
   "문체지적": [{"심각도": "", "대목": "", "지적": "", "수정제안": ""}],
@@ -53,7 +70,7 @@ ${timeline}
 }`
 }
 
-export async function reviewManuscript(work, episodeLabel, manuscript) {
+export async function reviewManuscript(work, episodeLabel, manuscript, prevReview = null) {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY
   if (!apiKey) {
     throw new Error('VITE_ANTHROPIC_API_KEY가 설정되지 않았습니다. Vercel 환경변수를 확인하세요.')
@@ -70,11 +87,11 @@ export async function reviewManuscript(work, episodeLabel, manuscript) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 4000,
-      system: buildSystemPrompt(work),
+      system: buildSystemPrompt(work, prevReview),
       messages: [
         {
           role: 'user',
-          content: `[감수 대상: ${episodeLabel}]\n\n${manuscript}`
+          content: `[감수 대상: ${episodeLabel}${prevReview ? ' — 재감수(개정고)' : ''}]\n\n${manuscript}`
         }
       ]
     })
@@ -95,7 +112,6 @@ export async function reviewManuscript(work, episodeLabel, manuscript) {
   try {
     return JSON.parse(clean)
   } catch {
-    // JSON 앞뒤에 잡문이 섞인 경우 중괄호 범위만 재시도
     const start = clean.indexOf('{')
     const end = clean.lastIndexOf('}')
     if (start >= 0 && end > start) {

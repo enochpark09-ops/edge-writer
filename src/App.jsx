@@ -42,6 +42,7 @@ export default function App() {
   const [draft, setDraft] = useState(EMPTY_DRAFT)
   const [showTimeline, setShowTimeline] = useState(false)
   const [timelineApplied, setTimelineApplied] = useState(false)
+  const [prevScore, setPrevScore] = useState(null)
   const fileRef = useRef(null)
 
   const work = useMemo(
@@ -104,21 +105,33 @@ export default function App() {
     setEditing(null)
   }
 
-  async function runReview() {
+  async function runReview(isRecheck = false) {
     if (!work) return
     if (!manuscript.trim()) {
       setError('원고를 붙여넣은 뒤 감수를 실행하세요.')
+      return
+    }
+    if (isRecheck && !work.lastReview) {
+      setError('재감수할 직전 리포트가 없습니다. 먼저 감수를 실행하세요.')
       return
     }
     setLoading(true)
     setError('')
     setReport(null)
     setTimelineApplied(false)
-    const label = episodeLabel.trim() || '회차 미표기 원고'
+    const label =
+      episodeLabel.trim() ||
+      (isRecheck ? work.lastReview.episode : '회차 미표기 원고')
+    const prev = isRecheck ? work.lastReview : null
     try {
-      const result = await reviewManuscript(work, label, manuscript)
+      const result = await reviewManuscript(work, label, manuscript, prev)
       setReport(result)
       setReportEpisode(label)
+      setPrevScore(isRecheck ? prev.report?.점수 ?? null : null)
+      updateWork(work.id, (w) => ({
+        ...w,
+        lastReview: { episode: label, report: result, at: Date.now() }
+      }))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -327,9 +340,31 @@ export default function App() {
           />
 
           <div className="run-row">
-            <button className="btn primary" onClick={runReview} disabled={loading}>
+            <button
+              className="btn primary"
+              onClick={() => runReview(false)}
+              disabled={loading}
+            >
               {loading ? '감수 중…' : '감수 실행'}
             </button>
+            <button
+              className="btn recheck"
+              onClick={() => runReview(true)}
+              disabled={loading || !work?.lastReview}
+              title={
+                work?.lastReview
+                  ? `직전 리포트(${work.lastReview.episode}, ${work.lastReview.report?.점수 ?? '-'}점)와 대조하여 개정고를 감수합니다`
+                  : '먼저 감수를 1회 실행하면 활성화됩니다'
+              }
+            >
+              재감수 실행
+            </button>
+            {work?.lastReview && !loading && (
+              <span className="recheck-hint">
+                직전: {work.lastReview.episode} ·{' '}
+                {work.lastReview.report?.점수 ?? '-'}점
+              </span>
+            )}
             {error && <p className="error">{error}</p>}
           </div>
 
@@ -350,10 +385,49 @@ export default function App() {
                 <div className="score">
                   <span className="score-num">{report.점수}</span>
                   <span className="score-label">/100</span>
+                  {prevScore != null && typeof report.점수 === 'number' && (
+                    <span
+                      className={
+                        'score-delta' +
+                        (report.점수 >= prevScore ? ' up' : ' down')
+                      }
+                    >
+                      {report.점수 >= prevScore ? '▲' : '▼'}
+                      {Math.abs(report.점수 - prevScore)} (직전 {prevScore})
+                    </span>
+                  )}
                 </div>
               </div>
 
               <p className="verdict">{report.총평}</p>
+
+              {(report.이전지적처리?.length ?? 0) > 0 && (
+                <div className="issue-section">
+                  <h4>
+                    이전 지적 처리
+                    <span className="count">{report.이전지적처리.length}</span>
+                  </h4>
+                  {report.이전지적처리.map((p, i) => (
+                    <div
+                      className={
+                        'issue prev-' +
+                        (p.처리 === '해결'
+                          ? 'ok'
+                          : p.처리 === '부분해결'
+                            ? 'half'
+                            : 'no')
+                      }
+                      key={i}
+                    >
+                      <div className="issue-top">
+                        <span className={'prev-state s-' + p.처리}>{p.처리}</span>
+                        <span className="quote">{p.지적}</span>
+                      </div>
+                      {p.코멘트 && <p className="issue-body">{p.코멘트}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="quick-row">
                 <div className="quick">
@@ -501,7 +575,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v1.0 · 감수 기준: 작품별 기획안·설정집·인물집 + 확정 타임라인
+        edge writer v1.1 · 감수 기준: 작품별 기획안·설정집·인물집 + 확정 타임라인
       </footer>
     </div>
   )
