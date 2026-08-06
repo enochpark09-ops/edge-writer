@@ -66,7 +66,11 @@ export default function App() {
     } else {
       const w = works.find((x) => x.id === target)
       if (!w) return
-      setDraft({ title: w.title, genre: w.genre, docs: { ...w.docs } })
+      setDraft({
+        title: w.title,
+        genre: w.genre,
+        docs: { plan: '', world: '', characters: '', roadmap: '', ...w.docs }
+      })
       setEditing(target)
     }
   }
