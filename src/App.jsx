@@ -24,7 +24,7 @@ function saveWorks(works) {
 const EMPTY_DRAFT = {
   title: '',
   genre: '',
-  docs: { plan: '', world: '', characters: '' }
+  docs: { plan: '', world: '', characters: '', roadmap: '' }
 }
 
 const SEVERITY_GLYPH = { 높음: '●', 중간: '▲', 낮음: '○' }
@@ -244,7 +244,8 @@ export default function App() {
                 {[
                   ['기획안', work.docs.plan],
                   ['설정집', work.docs.world],
-                  ['인물집', work.docs.characters]
+                  ['인물집', work.docs.characters],
+                  ['로드맵', work.docs.roadmap || '']
                 ].map(([name, body]) => (
                   <span
                     key={name}
@@ -494,6 +495,27 @@ export default function App() {
                 </div>
               )}
 
+              {(report.로드맵체크?.length ?? 0) > 0 && (
+                <div className="issue-section">
+                  <h4>
+                    로드맵 체크
+                    <span className="count">{report.로드맵체크.length}</span>
+                  </h4>
+                  {report.로드맵체크.map((r, i) => (
+                    <div
+                      className={'issue bait' + (r.판정 === '조기노출' ? ' prev-no' : '')}
+                      key={i}
+                    >
+                      <div className="issue-top">
+                        <span className="bait-name">{r.항목}</span>
+                        <span className="bait-state">{r.판정}</span>
+                      </div>
+                      <p className="issue-body">{r.코멘트}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="timeline-apply">
                 <p className="tl-summary">
                   <span>타임라인 요약</span> {report.타임라인요약}
@@ -535,7 +557,8 @@ export default function App() {
             {[
               ['plan', '기획안', '로그라인, 구조, 핵심 원칙, 떡밥 계획…'],
               ['world', '설정집', '세계관 규칙, 시스템, 세력…'],
-              ['characters', '인물집', '주요 인물 프로필, 말버릇, 관계, 아크…']
+              ['characters', '인물집', '주요 인물 프로필, 말버릇, 관계, 아크…'],
+              ['roadmap', '로드맵', '10화 단위로 갱신하는 화별 중장기 계획. 기획안·설정집·인물집은 안정 문서로 두고, 여기만 계속 이어 붙여 관리…']
             ].map(([key, name, ph]) => (
               <label className="field" key={key}>
                 <span>
@@ -575,7 +598,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v1.1 · 감수 기준: 작품별 기획안·설정집·인물집 + 확정 타임라인
+        edge writer v1.2 · 감수 기준: 작품별 기획안·설정집·인물집·로드맵 + 확정 타임라인
       </footer>
     </div>
   )
