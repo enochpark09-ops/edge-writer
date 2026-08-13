@@ -91,7 +91,7 @@ export async function reviewManuscript(work, episodeLabel, manuscript, prevRevie
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: buildSystemPrompt(work, prevReview),
       messages: [
         {
@@ -108,6 +108,13 @@ export async function reviewManuscript(work, episodeLabel, manuscript, prevRevie
   }
 
   const data = await res.json()
+
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error(
+      '감수 응답이 길이 제한에 걸려 잘렸습니다. 원고를 나눠서 감수하거나 다시 실행해 주세요.'
+    )
+  }
+
   const text = (data.content || [])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
@@ -120,8 +127,25 @@ export async function reviewManuscript(work, episodeLabel, manuscript, prevRevie
     const start = clean.indexOf('{')
     const end = clean.lastIndexOf('}')
     if (start >= 0 && end > start) {
-      return JSON.parse(clean.slice(start, end + 1))
+      try {
+        return JSON.parse(clean.slice(start, end + 1))
+      } catch {
+        // 마지막 시도: 열린 중괄호/대괄호 개수를 세어 부족한 닫는 기호를 보충
+        const slice = clean.slice(start)
+        const opens = (slice.match(/[{[]/g) || []).length
+        const closes = (slice.match(/[}\]]/g) || []).length
+        if (opens > closes) {
+          const patched = slice + ']'.repeat(0) + '}'.repeat(opens - closes)
+          try {
+            return JSON.parse(patched)
+          } catch {
+            // 아래 공통 에러로 낙하
+          }
+        }
+      }
     }
-    throw new Error('감수 결과 JSON 파싱 실패. 다시 실행해 주세요.')
+    throw new Error(
+      '감수 결과를 읽는 데 실패했습니다(응답 형식 오류). 다시 실행해 주세요. 반복되면 원고 분량을 줄여보세요.'
+    )
   }
 }
