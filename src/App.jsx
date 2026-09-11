@@ -1,48 +1,80 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { DEFAULT_WORK } from './defaultWork'
-import { reviewManuscript } from './api'
+import { reviewManuscript, REVIEW_KINDS } from './api'
+import { parseMeta, stripMetaBlock, summarizeLedgerChanges } from './lib/meta'
+import * as cloud from './lib/supabase'
 
-const STORE_KEY = 'edgewriter.works.v1'
+const STORE_KEY = 'edgewriter.works.v2'
+const LEGACY_KEY = 'edgewriter.works.v1'
 
-function loadWorks() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.length) return parsed
-    }
-  } catch (e) {
-    console.error('작품 데이터 로드 실패', e)
-  }
-  return [structuredClone(DEFAULT_WORK)]
+const DOC_FIELDS = [
+  ['plan', '기획안', '로그라인, 구조, 핵심 원칙, 수위 원칙, 떡밥 계획…'],
+  ['world', '설정집', '세계관 규칙, 지리, 제도, 풍속, 물건…'],
+  ['characters', '인물집', '주요 인물 프로필, 나이, 말버릇, 관계, 아크…'],
+  ['roadmap', '로드맵', '10화 단위로 갱신하는 화별 중장기 계획. 앞부분은 지우지 않고 누적…'],
+  ['schema', '메타스키마', '회차 말미 메타 블록의 형식 규약. 자동화의 인터페이스이므로 형식을 고정한다…'],
+  ['ledger', '떡밥장부', '떡밥 ID 발급 대장과 회수 예정. 회차마다 갱신되는 살아 있는 문서…']
+]
+const DOC_KEYS = DOC_FIELDS.map(([k]) => k)
+const EMPTY_DOCS = Object.fromEntries(DOC_KEYS.map((k) => [k, '']))
+
+const EMPTY_DRAFT = { title: '', genre: '', docs: { ...EMPTY_DOCS } }
+const SEVERITY_GLYPH = { 높음: '●', 중간: '▲', 낮음: '○' }
+
+function normalizeWork(w) {
+  return { ...w, docs: { ...EMPTY_DOCS, ...(w.docs || {}) }, timeline: w.timeline || [] }
 }
 
-function saveWorks(works) {
+function loadLocal() {
+  for (const key of [STORE_KEY, LEGACY_KEY]) {
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw) continue
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(normalizeWork)
+    } catch (e) {
+      console.error('작품 데이터 로드 실패', key, e)
+    }
+  }
+  return [normalizeWork(structuredClone(DEFAULT_WORK))]
+}
+
+function saveLocal(works) {
   localStorage.setItem(STORE_KEY, JSON.stringify(works))
 }
 
-const EMPTY_DRAFT = {
-  title: '',
-  genre: '',
-  docs: { plan: '', world: '', characters: '', roadmap: '' }
-}
-
-const SEVERITY_GLYPH = { 높음: '●', 중간: '▲', 낮음: '○' }
-
 export default function App() {
-  const [works, setWorks] = useState(loadWorks)
-  const [selectedId, setSelectedId] = useState(() => loadWorks()[0]?.id)
+  // ── 인증 ──
+  const [session, setSession] = useState(null)
+  const [authChecked, setAuthChecked] = useState(!cloud.cloudEnabled)
+  const [email, setEmail] = useState('')
+  const [authMsg, setAuthMsg] = useState('')
+
+  // ── 작품 ──
+  const [works, setWorks] = useState(loadLocal)
+  const [selectedId, setSelectedId] = useState(() => loadLocal()[0]?.id)
+  const [editing, setEditing] = useState(null)
+  const [draft, setDraft] = useState(EMPTY_DRAFT)
+
+  // ── 원고 ──
   const [episodeLabel, setEpisodeLabel] = useState('')
   const [manuscript, setManuscript] = useState('')
+  const [episodes, setEpisodes] = useState([])
+  const [savedEpisode, setSavedEpisode] = useState(null)
+
+  // ── 감수 ──
+  const [kind, setKind] = useState('gam')
   const [report, setReport] = useState(null)
+  const [reportKind, setReportKind] = useState('gam')
   const [reportEpisode, setReportEpisode] = useState('')
+  const [prevScore, setPrevScore] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [editing, setEditing] = useState(null) // null | 'new' | workId
-  const [draft, setDraft] = useState(EMPTY_DRAFT)
+  const [notice, setNotice] = useState('')
+
   const [showTimeline, setShowTimeline] = useState(false)
   const [timelineApplied, setTimelineApplied] = useState(false)
-  const [prevScore, setPrevScore] = useState(null)
+  const [syncing, setSyncing] = useState(false)
   const fileRef = useRef(null)
 
   const work = useMemo(
@@ -50,15 +82,62 @@ export default function App() {
     [works, selectedId]
   )
 
-  useEffect(() => saveWorks(works), [works])
+  const charCount = stripMetaBlock(manuscript).replace(/\s/g, '').length
+  const charCountRaw = stripMetaBlock(manuscript).length
+  const parsed = useMemo(() => (manuscript.trim() ? parseMeta(manuscript) : null), [manuscript])
 
-  const charCount = manuscript.replace(/\s/g, '').length
-  const charCountRaw = manuscript.length
+  useEffect(() => saveLocal(works), [works])
+
+  // ── 세션 ──
+  useEffect(() => {
+    if (!cloud.cloudEnabled) return
+    cloud.getSession().then((s) => {
+      setSession(s)
+      setAuthChecked(true)
+    })
+    return cloud.onAuthChange((s) => setSession(s))
+  }, [])
+
+  // ── 로그인 뒤 클라우드에서 작품 당겨오기 ──
+  const pullCloud = useCallback(async () => {
+    if (!cloud.cloudEnabled || !session) return
+    setSyncing(true)
+    try {
+      const remote = await cloud.fetchWorks()
+      if (remote?.length) {
+        setWorks((local) => {
+          const byId = new Map(remote.map((w) => [w.id, normalizeWork(w)]))
+          for (const l of local) if (!byId.has(l.id)) byId.set(l.id, l)
+          return [...byId.values()]
+        })
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSyncing(false)
+    }
+  }, [session])
+
+  useEffect(() => {
+    if (session) pullCloud()
+  }, [session, pullCloud])
+
+  // ── 회차 목록 ──
+  useEffect(() => {
+    if (!session || !work?.id) return setEpisodes([])
+    cloud.fetchEpisodes(work.id).then(setEpisodes).catch((e) => setError(e.message))
+  }, [session, work?.id])
 
   function updateWork(id, updater) {
     setWorks((prev) => prev.map((w) => (w.id === id ? updater(w) : w)))
   }
 
+  function flash(msg) {
+    setNotice(msg)
+    setTimeout(() => setNotice(''), 4000)
+  }
+
+  // ── 작품 편집 ──
   function openEditor(target) {
     if (target === 'new') {
       setDraft(structuredClone(EMPTY_DRAFT))
@@ -66,39 +145,46 @@ export default function App() {
     } else {
       const w = works.find((x) => x.id === target)
       if (!w) return
-      setDraft({
-        title: w.title,
-        genre: w.genre,
-        docs: { plan: '', world: '', characters: '', roadmap: '', ...w.docs }
-      })
+      setDraft({ title: w.title, genre: w.genre, docs: { ...EMPTY_DOCS, ...w.docs } })
       setEditing(target)
     }
   }
 
-  function saveDraft() {
+  async function saveDraft() {
     if (!draft.title.trim()) return
+    let target
     if (editing === 'new') {
-      const nw = {
+      target = {
         id: 'w-' + Date.now(),
         title: draft.title.trim(),
         genre: draft.genre.trim(),
         docs: { ...draft.docs },
         timeline: []
       }
-      setWorks((prev) => [...prev, nw])
-      setSelectedId(nw.id)
+      setWorks((prev) => [...prev, target])
+      setSelectedId(target.id)
     } else {
-      updateWork(editing, (w) => ({
-        ...w,
+      target = {
+        ...works.find((w) => w.id === editing),
         title: draft.title.trim(),
         genre: draft.genre.trim(),
         docs: { ...draft.docs }
-      }))
+      }
+      updateWork(editing, () => target)
     }
     setEditing(null)
+
+    if (session) {
+      try {
+        await cloud.pushWork(target)
+        flash('문서를 클라우드에 저장했습니다.')
+      } catch (e) {
+        setError(e.message)
+      }
+    }
   }
 
-  function deleteWork(id) {
+  async function deleteWork(id) {
     if (works.length <= 1) {
       alert('마지막 작품은 삭제할 수 없습니다. 새 작품을 먼저 등록하세요.')
       return
@@ -107,35 +193,92 @@ export default function App() {
     setWorks((prev) => prev.filter((w) => w.id !== id))
     if (selectedId === id) setSelectedId(works.find((w) => w.id !== id)?.id)
     setEditing(null)
+    if (session) cloud.deleteWorkCloud(id).catch((e) => setError(e.message))
   }
 
+  // ── 감수 ──
   async function runReview(isRecheck = false) {
     if (!work) return
-    if (!manuscript.trim()) {
-      setError('원고를 붙여넣은 뒤 감수를 실행하세요.')
-      return
+    if (!manuscript.trim()) return setError('원고를 붙여넣은 뒤 감수를 실행하세요.')
+    const prevStore = work.lastReview?.[kind]
+    if (isRecheck && !prevStore) {
+      return setError(`재감수할 직전 ${REVIEW_KINDS[kind].name} 리포트가 없습니다.`)
     }
-    if (isRecheck && !work.lastReview) {
-      setError('재감수할 직전 리포트가 없습니다. 먼저 감수를 실행하세요.')
-      return
-    }
+
     setLoading(true)
     setError('')
     setReport(null)
     setTimelineApplied(false)
-    const label =
-      episodeLabel.trim() ||
-      (isRecheck ? work.lastReview.episode : '회차 미표기 원고')
-    const prev = isRecheck ? work.lastReview : null
+
+    const label = episodeLabel.trim() || (isRecheck ? prevStore.episode : '회차 미표기 원고')
+    const prev = isRecheck ? prevStore : null
+
     try {
-      const result = await reviewManuscript(work, label, manuscript, prev)
+      const result = await reviewManuscript(work, label, manuscript, prev, kind)
       setReport(result)
+      setReportKind(kind)
       setReportEpisode(label)
-      setPrevScore(isRecheck ? prev.report?.점수 ?? null : null)
+      setPrevScore(isRecheck ? (prevStore.report?.점수 ?? null) : null)
       updateWork(work.id, (w) => ({
         ...w,
-        lastReview: { episode: label, report: result, at: Date.now() }
+        lastReview: { ...(w.lastReview || {}), [kind]: { episode: label, report: result, at: Date.now() } }
       }))
+
+      if (session && savedEpisode?.id) {
+        const round = isRecheck ? 2 : 1
+        cloud
+          .saveReview({ workId: work.id, episodeId: savedEpisode.id, kind, round, report: result })
+          .catch((e) => setError(e.message))
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── 원고 저장 / 확정 ──
+  async function persistEpisode(status) {
+    if (!session) return setError('클라우드 로그인이 필요합니다.')
+    if (!manuscript.trim()) return setError('원고가 비어 있습니다.')
+    const label = episodeLabel.trim()
+    if (!label) return setError('회차 표기를 입력하세요. (예: 1부-004)')
+
+    const p = parsed
+    const { part, no } = cloud.splitLabel(label)
+    if (!no) return setError('회차 번호를 읽지 못했습니다. "1부-004" 형태로 적어주세요.')
+
+    setLoading(true)
+    setError('')
+    try {
+      const saved = await cloud.saveEpisode({
+        workId: work.id,
+        part: p?.meta?.part ?? part,
+        no: p?.meta?.no ?? no,
+        label,
+        title: p?.meta?.제목 || '',
+        body: manuscript,
+        metaRaw: p?.ok || p?.meta ? JSON.stringify(p.meta) : null,
+        meta: {
+          ...(p?.meta || {}),
+          ...(report?.타임라인요약 ? { 타임라인요약: report.타임라인요약 } : {})
+        },
+        charCountNs: charCount,
+        status
+      })
+      setSavedEpisode(saved)
+
+      if (p?.plants?.length) {
+        const r = await cloud.syncPlants(work.id, p.plants, saved.id, label)
+        flash(
+          `${status === 'confirmed' ? '확정 저장' : '임시 저장'} 완료 · 떡밥 ${r.created}건 신규, ${r.updated}건 갱신`
+        )
+      } else {
+        flash(status === 'confirmed' ? '확정 원고를 저장했습니다.' : '임시 저장했습니다.')
+      }
+      if (p?.settings?.length) await cloud.syncSettings(work.id, p.settings, label)
+
+      setEpisodes(await cloud.fetchEpisodes(work.id))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -145,23 +288,20 @@ export default function App() {
 
   function applyTimeline() {
     if (!report?.타임라인요약 || !work) return
-    const entry = `${reportEpisode}: ${report.타임라인요약}`
-    updateWork(work.id, (w) => ({ ...w, timeline: [...w.timeline, entry] }))
+    updateWork(work.id, (w) => ({
+      ...w,
+      timeline: [...w.timeline, `${reportEpisode}: ${report.타임라인요약}`]
+    }))
     setTimelineApplied(true)
   }
 
   function removeTimelineEntry(idx) {
     if (!confirm('이 타임라인 항목을 삭제할까요?')) return
-    updateWork(work.id, (w) => ({
-      ...w,
-      timeline: w.timeline.filter((_, i) => i !== idx)
-    }))
+    updateWork(work.id, (w) => ({ ...w, timeline: w.timeline.filter((_, i) => i !== idx) }))
   }
 
   function exportWorks() {
-    const blob = new Blob([JSON.stringify(works, null, 2)], {
-      type: 'application/json'
-    })
+    const blob = new Blob([JSON.stringify(works, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -176,11 +316,12 @@ export default function App() {
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(reader.result)
-        if (!Array.isArray(parsed) || !parsed.length) throw new Error()
-        if (!confirm(`백업의 작품 ${parsed.length}개로 교체할까요? 현재 데이터는 사라집니다.`)) return
-        setWorks(parsed)
-        setSelectedId(parsed[0].id)
+        const parsedJson = JSON.parse(reader.result)
+        if (!Array.isArray(parsedJson) || !parsedJson.length) throw new Error()
+        if (!confirm(`백업의 작품 ${parsedJson.length}개로 교체할까요? 현재 데이터는 사라집니다.`)) return
+        const list = parsedJson.map(normalizeWork)
+        setWorks(list)
+        setSelectedId(list[0].id)
       } catch {
         alert('백업 파일 형식이 올바르지 않습니다.')
       }
@@ -189,13 +330,64 @@ export default function App() {
     ev.target.value = ''
   }
 
+  async function handleSignIn(e) {
+    e.preventDefault()
+    setAuthMsg('')
+    try {
+      await cloud.signIn(email.trim())
+      setAuthMsg('메일로 로그인 링크를 보냈습니다. 같은 기기에서 링크를 열어주세요.')
+    } catch (err) {
+      setAuthMsg(err.message)
+    }
+  }
+
+  // ── 로그인 화면 ──
+  if (cloud.cloudEnabled && authChecked && !session) {
+    return (
+      <div className="app">
+        <header className="masthead">
+          <div className="masthead-inner">
+            <div className="brand">
+              <span className="brand-word">edge</span>
+              <span className="brand-bar">|</span>
+              <span className="brand-word thin">writer</span>
+            </div>
+            <p className="brand-sub">설정 감수실 · HANOK 콘텐츠 파이프라인</p>
+          </div>
+          <div className="grid-strip" aria-hidden="true" />
+        </header>
+        <main className="auth-wrap">
+          <form className="auth-card" onSubmit={handleSignIn}>
+            <h2>로그인</h2>
+            <p className="muted">
+              확정 원고와 문서를 클라우드에 보관합니다. 메일로 링크를 보내드립니다.
+            </p>
+            <label className="field">
+              <span>메일 주소</span>
+              <input
+                id="auth-email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+              />
+            </label>
+            <button className="btn primary" type="submit">
+              로그인 링크 받기
+            </button>
+            {authMsg && <p className="auth-msg">{authMsg}</p>}
+          </form>
+        </main>
+      </div>
+    )
+  }
+
+  const kindDef = REVIEW_KINDS[reportKind] || REVIEW_KINDS.gam
   const issueSections = report
-    ? [
-        { key: '설정오류', label: '설정 오류', items: report.설정오류 || [] },
-        { key: '인물불일치', label: '인물 불일치', items: report.인물불일치 || [] },
-        { key: '문체지적', label: '문체 지적', items: report.문체지적 || [] }
-      ]
+    ? kindDef.sections.map((s) => ({ ...s, items: report[s.key] || [] }))
     : []
+  const blocking = report ? cloud.countBlocking(report) : 0
 
   return (
     <div className="app">
@@ -207,6 +399,20 @@ export default function App() {
             <span className="brand-word thin">writer</span>
           </div>
           <p className="brand-sub">설정 감수실 · HANOK 콘텐츠 파이프라인</p>
+          <div className="cloud-state">
+            {!cloud.cloudEnabled ? (
+              <span className="cloud-chip off">로컬 전용</span>
+            ) : session ? (
+              <>
+                <span className="cloud-chip on">{syncing ? '동기화 중…' : '클라우드 연결됨'}</span>
+                <button className="btn ghost sm" onClick={() => cloud.signOut()}>
+                  로그아웃
+                </button>
+              </>
+            ) : (
+              <span className="cloud-chip off">연결 안 됨</span>
+            )}
+          </div>
         </div>
         <div className="grid-strip" aria-hidden="true" />
       </header>
@@ -230,12 +436,11 @@ export default function App() {
                     setSelectedId(w.id)
                     setReport(null)
                     setError('')
+                    setSavedEpisode(null)
                   }}
                 >
                   <span className="work-title">{w.title}</span>
-                  <span className="work-meta">
-                    타임라인 {w.timeline.length}건
-                  </span>
+                  <span className="work-meta">타임라인 {w.timeline.length}건</span>
                 </button>
               </li>
             ))}
@@ -245,16 +450,15 @@ export default function App() {
             <div className="work-detail">
               <p className="work-genre">{work.genre || '장르 미기재'}</p>
               <div className="doc-badges">
-                {[
-                  ['기획안', work.docs.plan],
-                  ['설정집', work.docs.world],
-                  ['인물집', work.docs.characters],
-                  ['로드맵', work.docs.roadmap || '']
-                ].map(([name, body]) => (
+                {DOC_FIELDS.map(([key, name]) => (
                   <span
-                    key={name}
-                    className={'doc-badge' + (body.trim() ? ' ok' : ' empty')}
-                    title={body.trim() ? `${body.length.toLocaleString()}자` : '비어 있음'}
+                    key={key}
+                    className={'doc-badge' + ((work.docs[key] || '').trim() ? ' ok' : ' empty')}
+                    title={
+                      (work.docs[key] || '').trim()
+                        ? `${work.docs[key].length.toLocaleString()}자`
+                        : '비어 있음'
+                    }
                   >
                     {name}
                   </span>
@@ -264,13 +468,27 @@ export default function App() {
                 <button className="btn ghost sm" onClick={() => openEditor(work.id)}>
                   문서 편집
                 </button>
-                <button
-                  className="btn ghost sm"
-                  onClick={() => setShowTimeline((v) => !v)}
-                >
+                <button className="btn ghost sm" onClick={() => setShowTimeline((v) => !v)}>
                   타임라인 {showTimeline ? '닫기' : '보기'}
                 </button>
               </div>
+            </div>
+          )}
+
+          {session && episodes.length > 0 && (
+            <div className="ep-list">
+              <h3>저장된 회차 <span className="count">{episodes.length}</span></h3>
+              <ul>
+                {episodes.map((e) => (
+                  <li key={e.id} className={'ep-row s-' + e.status}>
+                    <span className="ep-label">{e.label}</span>
+                    <span className="ep-status">{
+                      { draft: '초고', review: '감수중', confirmed: '확정', published: '발행' }[e.status]
+                    }</span>
+                    <span className="ep-chars">{(e.char_count || 0).toLocaleString()}자</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -278,19 +496,13 @@ export default function App() {
             <div className="timeline">
               <h3>확정 타임라인</h3>
               {work.timeline.length === 0 && (
-                <p className="muted">
-                  아직 확정된 회차가 없습니다. 감수 후 "타임라인 반영"으로 쌓입니다.
-                </p>
+                <p className="muted">아직 확정된 회차가 없습니다. 감수 후 "타임라인 반영"으로 쌓입니다.</p>
               )}
               <ol>
                 {work.timeline.map((t, i) => (
                   <li key={i}>
                     <span>{t}</span>
-                    <button
-                      className="entry-del"
-                      onClick={() => removeTimelineEntry(i)}
-                      aria-label="항목 삭제"
-                    >
+                    <button className="entry-del" onClick={() => removeTimelineEntry(i)} aria-label="항목 삭제">
                       ×
                     </button>
                   </li>
@@ -300,34 +512,37 @@ export default function App() {
           )}
 
           <div className="backup-row">
-            <button className="btn ghost sm" onClick={exportWorks}>
-              백업 내보내기
-            </button>
-            <button className="btn ghost sm" onClick={() => fileRef.current?.click()}>
-              백업 불러오기
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="application/json"
-              hidden
-              onChange={importWorks}
-            />
+            <button className="btn ghost sm" onClick={exportWorks}>백업 내보내기</button>
+            <button className="btn ghost sm" onClick={() => fileRef.current?.click()}>백업 불러오기</button>
+            <input ref={fileRef} type="file" accept="application/json" hidden onChange={importWorks} />
           </div>
         </aside>
 
         {/* ── 감수 데스크 ── */}
         <section className="desk">
           <div className="desk-head">
-            <h2>
-              원고 감수 <span className="desk-work">— {work?.title}</span>
-            </h2>
+            <h2>원고 감수 <span className="desk-work">— {work?.title}</span></h2>
+          </div>
+
+          <div className="kind-row">
+            {Object.values(REVIEW_KINDS).map((k) => (
+              <button
+                key={k.key}
+                className={'kind-chip' + (kind === k.key ? ' active' : '')}
+                onClick={() => setKind(k.key)}
+                title={k.desc}
+              >
+                <span className="kind-name">{k.name}</span>
+                <span className="kind-role">{k.role}</span>
+              </button>
+            ))}
           </div>
 
           <div className="input-row">
             <input
+              id="episode-label"
               className="episode-input"
-              placeholder="회차 표기 (예: 2화. 3일의 설계)"
+              placeholder="회차 표기 (예: 1부-004)"
               value={episodeLabel}
               onChange={(e) => setEpisodeLabel(e.target.value)}
             />
@@ -338,45 +553,85 @@ export default function App() {
           </div>
 
           <textarea
+            id="manuscript"
             className="manuscript"
-            placeholder="회차 원고 전문을 붙여넣으세요."
+            placeholder="회차 원고 전문을 붙여넣으세요. 말미의 메타 블록까지 함께 붙이면 떡밥과 설정이 자동으로 정리됩니다."
             value={manuscript}
             onChange={(e) => setManuscript(e.target.value)}
           />
 
+          {parsed && (
+            <div className={'meta-panel' + (parsed.ok ? ' ok' : ' warn')}>
+              {parsed.meta.회차 ? (
+                <>
+                  <div className="meta-head">
+                    <span className="meta-code">{parsed.meta.회차}</span>
+                    <span className="meta-sum">
+                      떡밥 {parsed.plants.length} · 설정 {parsed.settings.length} · 주역{' '}
+                      {parsed.meta.등장?.주역?.length ?? 0}
+                    </span>
+                  </div>
+                  {parsed.plants.length > 0 && (
+                    <p className="meta-line">{summarizeLedgerChanges(parsed.plants, parsed.meta.회차)}</p>
+                  )}
+                  {parsed.settings.filter((s) => !s.registered).length > 0 && (
+                    <p className="meta-line warn-line">
+                      설정집 미등재 {parsed.settings.filter((s) => !s.registered).length}건 —{' '}
+                      {parsed.settings.filter((s) => !s.registered).map((s) => s.key).join(', ')}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="meta-line">메타 블록이 없습니다. 떡밥·설정 자동 정리는 건너뜁니다.</p>
+              )}
+              {parsed.warnings.map((w, i) => (
+                <p className="meta-line warn-line" key={i}>{w}</p>
+              ))}
+            </div>
+          )}
+
           <div className="run-row">
-            <button
-              className="btn primary"
-              onClick={() => runReview(false)}
-              disabled={loading}
-            >
-              {loading ? '감수 중…' : '감수 실행'}
+            <button className="btn primary" onClick={() => runReview(false)} disabled={loading}>
+              {loading ? '처리 중…' : `${REVIEW_KINDS[kind].name} 감수 실행`}
             </button>
             <button
               className="btn recheck"
               onClick={() => runReview(true)}
-              disabled={loading || !work?.lastReview}
+              disabled={loading || !work?.lastReview?.[kind]}
               title={
-                work?.lastReview
-                  ? `직전 리포트(${work.lastReview.episode}, ${work.lastReview.report?.점수 ?? '-'}점)와 대조하여 개정고를 감수합니다`
+                work?.lastReview?.[kind]
+                  ? `직전 ${REVIEW_KINDS[kind].name} 리포트와 대조하여 개정고를 감수합니다`
                   : '먼저 감수를 1회 실행하면 활성화됩니다'
               }
             >
-              재감수 실행
+              재감수
             </button>
-            {work?.lastReview && !loading && (
-              <span className="recheck-hint">
-                직전: {work.lastReview.episode} ·{' '}
-                {work.lastReview.report?.점수 ?? '-'}점
-              </span>
+            {session && (
+              <>
+                <button className="btn ghost" onClick={() => persistEpisode('review')} disabled={loading}>
+                  임시 저장
+                </button>
+                <button
+                  className="btn confirm"
+                  onClick={() => {
+                    if (blocking > 0 && !confirm(`고·중 심각도 지적이 ${blocking}건 남아 있습니다. 그래도 확정할까요?\n(감수는 자문이며 결정은 대표가 합니다)`)) return
+                    persistEpisode('confirmed')
+                  }}
+                  disabled={loading}
+                >
+                  원고 확정
+                </button>
+              </>
             )}
-            {error && <p className="error">{error}</p>}
           </div>
+
+          {notice && <p className="notice">{notice}</p>}
+          {error && <p className="error">{error}</p>}
 
           {loading && (
             <div className="loading-note">
-              설정 문서 3종과 타임라인 {work?.timeline.length ?? 0}건을 대조하고
-              있습니다…
+              {REVIEW_KINDS[kind].name}이(가) {REVIEW_KINDS[kind].docs.length}종 문서와 타임라인{' '}
+              {work?.timeline.length ?? 0}건을 대조하고 있습니다…
             </div>
           )}
 
@@ -384,19 +639,16 @@ export default function App() {
             <div className="report">
               <div className="report-head">
                 <div>
-                  <p className="report-episode">{reportEpisode}</p>
+                  <p className="report-episode">
+                    {reportEpisode} · {kindDef.name}({kindDef.hanja}) {kindDef.role}
+                  </p>
                   <h3>감수 리포트</h3>
                 </div>
                 <div className="score">
                   <span className="score-num">{report.점수}</span>
                   <span className="score-label">/100</span>
                   {prevScore != null && typeof report.점수 === 'number' && (
-                    <span
-                      className={
-                        'score-delta' +
-                        (report.점수 >= prevScore ? ' up' : ' down')
-                      }
-                    >
+                    <span className={'score-delta' + (report.점수 >= prevScore ? ' up' : ' down')}>
                       {report.점수 >= prevScore ? '▲' : '▼'}
                       {Math.abs(report.점수 - prevScore)} (직전 {prevScore})
                     </span>
@@ -406,22 +658,18 @@ export default function App() {
 
               <p className="verdict">{report.총평}</p>
 
+              <div className={'gate' + (blocking === 0 ? ' pass' : ' fail')}>
+                {blocking === 0
+                  ? '공개 기준 충족 — 고·중 심각도 0건'
+                  : `공개 기준 미달 — 고·중 심각도 ${blocking}건 (감수는 자문이며 확정은 대표가 결정합니다)`}
+              </div>
+
               {(report.이전지적처리?.length ?? 0) > 0 && (
                 <div className="issue-section">
-                  <h4>
-                    이전 지적 처리
-                    <span className="count">{report.이전지적처리.length}</span>
-                  </h4>
+                  <h4>이전 지적 처리<span className="count">{report.이전지적처리.length}</span></h4>
                   {report.이전지적처리.map((p, i) => (
                     <div
-                      className={
-                        'issue prev-' +
-                        (p.처리 === '해결'
-                          ? 'ok'
-                          : p.처리 === '부분해결'
-                            ? 'half'
-                            : 'no')
-                      }
+                      className={'issue prev-' + (p.처리 === '해결' ? 'ok' : p.처리 === '부분해결' ? 'half' : 'no')}
                       key={i}
                     >
                       <div className="issue-top">
@@ -435,45 +683,80 @@ export default function App() {
               )}
 
               <div className="quick-row">
-                <div className="quick">
-                  <span className="quick-label">분량</span>
-                  <span className="quick-value">
-                    {report.분량판정?.자수?.toLocaleString?.() ?? '-'}자 ·{' '}
-                    {report.분량판정?.판정 ?? '-'}
-                  </span>
-                </div>
-                <div className={'quick' + (report.훅판정?.통과 ? ' pass' : ' fail')}>
-                  <span className="quick-label">말미 훅</span>
-                  <span className="quick-value">
-                    {report.훅판정?.통과 ? '통과' : '보완 필요'} —{' '}
-                    {report.훅판정?.코멘트}
-                  </span>
-                </div>
+                {report.분량판정 && (
+                  <div className="quick">
+                    <span className="quick-label">분량</span>
+                    <span className="quick-value">
+                      {report.분량판정.자수?.toLocaleString?.() ?? '-'}자 · {report.분량판정.판정 ?? '-'}
+                    </span>
+                  </div>
+                )}
+                {report.훅판정 && (
+                  <div className={'quick' + (report.훅판정.통과 ? ' pass' : ' fail')}>
+                    <span className="quick-label">말미 훅</span>
+                    <span className="quick-value">
+                      {report.훅판정.통과 ? '통과' : '보완 필요'} — {report.훅판정.코멘트}
+                    </span>
+                  </div>
+                )}
+                {report.메타블록 && (
+                  <div className={'quick' + (report.메타블록.통과 ? ' pass' : ' fail')}>
+                    <span className="quick-label">메타 블록</span>
+                    <span className="quick-value">
+                      {report.메타블록.통과 ? '규약 준수' : '형식 오류'} — {report.메타블록.코멘트}
+                    </span>
+                  </div>
+                )}
+                {report.등급판정 && (
+                  <div className={'quick' + (report.등급판정.적합 ? ' pass' : ' fail')}>
+                    <span className="quick-label">등급</span>
+                    <span className="quick-value">
+                      {report.등급판정.적합 ? '적합' : `권장 ${report.등급판정.권장등급}세`} —{' '}
+                      {report.등급판정.코멘트}
+                    </span>
+                  </div>
+                )}
+                {report.페이스판정 && (
+                  <div className={'quick' + (report.페이스판정.적정 ? ' pass' : ' fail')}>
+                    <span className="quick-label">페이스</span>
+                    <span className="quick-value">
+                      {report.페이스판정.적정 ? '적정' : '조정 필요'} — {report.페이스판정.코멘트}
+                    </span>
+                  </div>
+                )}
               </div>
+
+              {(report.연령확인?.length ?? 0) > 0 && (
+                <div className="issue-section">
+                  <h4>연령 확인<span className="count">{report.연령확인.length}</span></h4>
+                  {report.연령확인.map((a, i) => (
+                    <div className={'issue age-' + (a.판정 === '성인' ? 'ok' : 'no')} key={i}>
+                      <div className="issue-top">
+                        <span className="bait-name">{a.인물} ({a.나이})</span>
+                        <span className="bait-state">{a.판정}</span>
+                      </div>
+                      <p className="issue-body">{a.장면}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {issueSections.map((sec) => (
                 <div className="issue-section" key={sec.key}>
-                  <h4>
-                    {sec.label}
-                    <span className="count">{sec.items.length}</span>
-                  </h4>
+                  <h4>{sec.label}<span className="count">{sec.items.length}</span></h4>
                   {sec.items.length === 0 ? (
                     <p className="clean">지적 사항 없음</p>
                   ) : (
                     sec.items.map((it, i) => (
                       <div className={'issue sev-' + (it.심각도 || '낮음')} key={i}>
                         <div className="issue-top">
-                          <span className="sev-glyph">
-                            {SEVERITY_GLYPH[it.심각도] || '○'}
-                          </span>
+                          <span className="sev-glyph">{SEVERITY_GLYPH[it.심각도] || '○'}</span>
                           <span className="sev-name">{it.심각도}</span>
                           {it.대목 && <span className="quote">“{it.대목}”</span>}
                         </div>
                         <p className="issue-body">{it.지적}</p>
                         {it.수정제안 && (
-                          <p className="issue-fix">
-                            <span>수정 제안</span> {it.수정제안}
-                          </p>
+                          <p className="issue-fix"><span>수정 제안</span> {it.수정제안}</p>
                         )}
                       </div>
                     ))
@@ -483,10 +766,7 @@ export default function App() {
 
               {(report.떡밥체크?.length ?? 0) > 0 && (
                 <div className="issue-section">
-                  <h4>
-                    떡밥 체크
-                    <span className="count">{report.떡밥체크.length}</span>
-                  </h4>
+                  <h4>떡밥 체크<span className="count">{report.떡밥체크.length}</span></h4>
                   {report.떡밥체크.map((b, i) => (
                     <div className="issue bait" key={i}>
                       <div className="issue-top">
@@ -501,15 +781,9 @@ export default function App() {
 
               {(report.로드맵체크?.length ?? 0) > 0 && (
                 <div className="issue-section">
-                  <h4>
-                    로드맵 체크
-                    <span className="count">{report.로드맵체크.length}</span>
-                  </h4>
+                  <h4>로드맵 체크<span className="count">{report.로드맵체크.length}</span></h4>
                   {report.로드맵체크.map((r, i) => (
-                    <div
-                      className={'issue bait' + (r.판정 === '조기노출' ? ' prev-no' : '')}
-                      key={i}
-                    >
+                    <div className={'issue bait' + (r.판정 === '조기노출' ? ' prev-no' : '')} key={i}>
                       <div className="issue-top">
                         <span className="bait-name">{r.항목}</span>
                         <span className="bait-state">{r.판정}</span>
@@ -520,18 +794,14 @@ export default function App() {
                 </div>
               )}
 
-              <div className="timeline-apply">
-                <p className="tl-summary">
-                  <span>타임라인 요약</span> {report.타임라인요약}
-                </p>
-                <button
-                  className="btn primary"
-                  onClick={applyTimeline}
-                  disabled={timelineApplied}
-                >
-                  {timelineApplied ? '타임라인 반영 완료' : '타임라인 반영'}
-                </button>
-              </div>
+              {report.타임라인요약 && (
+                <div className="timeline-apply">
+                  <p className="tl-summary"><span>타임라인 요약</span> {report.타임라인요약}</p>
+                  <button className="btn primary" onClick={applyTimeline} disabled={timelineApplied}>
+                    {timelineApplied ? '타임라인 반영 완료' : '타임라인 반영'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -545,64 +815,49 @@ export default function App() {
             <label className="field">
               <span>작품명</span>
               <input
+                id="w-title"
                 value={draft.title}
                 onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                placeholder="예: 최약체 회귀병사"
+                placeholder="예: 패수"
               />
             </label>
             <label className="field">
               <span>장르 / 연재 조건</span>
               <input
+                id="w-genre"
                 value={draft.genre}
                 onChange={(e) => setDraft({ ...draft, genre: e.target.value })}
-                placeholder="예: 회귀/밀리터리, 문피아, 주5회, 회당 5,000~5,500자"
+                placeholder="예: 대체역사, 문피아, 19세, 주5회, 회당 5,500~6,500자"
               />
             </label>
-            {[
-              ['plan', '기획안', '로그라인, 구조, 핵심 원칙, 떡밥 계획…'],
-              ['world', '설정집', '세계관 규칙, 시스템, 세력…'],
-              ['characters', '인물집', '주요 인물 프로필, 말버릇, 관계, 아크…'],
-              ['roadmap', '로드맵', '10화 단위로 갱신하는 화별 중장기 계획. 기획안·설정집·인물집은 안정 문서로 두고, 여기만 계속 이어 붙여 관리…']
-            ].map(([key, name, ph]) => (
+            {DOC_FIELDS.map(([key, name, ph]) => (
               <label className="field" key={key}>
                 <span>
                   {name}
-                  <em className="field-count">
-                    {draft.docs[key].length.toLocaleString()}자
-                  </em>
+                  <em className="field-count">{(draft.docs[key] || '').length.toLocaleString()}자</em>
                 </span>
                 <textarea
-                  value={draft.docs[key]}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      docs: { ...draft.docs, [key]: e.target.value }
-                    })
-                  }
+                  id={'doc-' + key}
+                  value={draft.docs[key] || ''}
+                  onChange={(e) => setDraft({ ...draft, docs: { ...draft.docs, [key]: e.target.value } })}
                   placeholder={ph}
                 />
               </label>
             ))}
             <div className="modal-actions">
               {editing !== 'new' && (
-                <button className="btn danger" onClick={() => deleteWork(editing)}>
-                  작품 삭제
-                </button>
+                <button className="btn danger" onClick={() => deleteWork(editing)}>작품 삭제</button>
               )}
               <div className="spacer" />
-              <button className="btn ghost" onClick={() => setEditing(null)}>
-                취소
-              </button>
-              <button className="btn primary" onClick={saveDraft}>
-                저장
-              </button>
+              <button className="btn ghost" onClick={() => setEditing(null)}>취소</button>
+              <button className="btn primary" onClick={saveDraft}>저장</button>
             </div>
           </div>
         </div>
       )}
 
       <footer className="foot">
-        edge writer v1.2 · 감수 기준: 작품별 기획안·설정집·인물집·로드맵 + 확정 타임라인
+        edge writer v2.0 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관
       </footer>
     </div>
   )

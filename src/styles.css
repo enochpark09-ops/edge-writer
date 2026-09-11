@@ -295,3 +295,84 @@ input, textarea { font-family: var(--sans); color: var(--ink); }
 .prev-state.s-해결 { color: var(--pass); }
 .prev-state.s-부분해결 { color: var(--amber); }
 .prev-state.s-미해결 { color: var(--red); }
+
+/* ═══════════════════════════════════════════════════════
+   v2.0 추가 — 인증 / 감수 3종 / 메타 패널 / 회차 목록
+   ═══════════════════════════════════════════════════════ */
+
+/* 로그인 */
+.auth-wrap { display: flex; justify-content: center; padding: 64px 20px; }
+.auth-card {
+  width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px;
+  background: var(--paper, #fff); border: 1px solid var(--line, #ddd);
+  padding: 28px 26px;
+}
+.auth-card h2 { margin: 0; font-size: 20px; }
+.auth-msg { font-size: 13px; line-height: 1.6; margin: 0; color: var(--ink2, #555); }
+
+/* 클라우드 상태 */
+.cloud-state { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.cloud-chip {
+  font-size: 11px; letter-spacing: .04em; padding: 3px 9px; border: 1px solid; border-radius: 2px;
+  font-family: ui-monospace, monospace;
+}
+.cloud-chip.on  { color: #2f6b45; border-color: #b6d5c2; background: #f2f8f4; }
+.cloud-chip.off { color: #8a8279; border-color: #ddd6cd; background: #f7f5f2; }
+
+/* 감수 종류 선택 */
+.kind-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.kind-chip {
+  flex: 1 1 120px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 9px 12px; border: 1px solid var(--line, #ddd); background: transparent;
+  cursor: pointer; transition: all .15s; text-align: left;
+}
+.kind-chip:hover { border-color: var(--ink, #333); }
+.kind-chip.active { border-color: var(--accent, #8c2f2f); background: rgba(140, 47, 47, .06); }
+.kind-name { font-weight: 700; font-size: 14px; }
+.kind-role { font-size: 11px; color: var(--ink3, #888); }
+
+/* 메타 파싱 패널 */
+.meta-panel {
+  margin: 10px 0 14px; padding: 12px 14px; border-left: 3px solid;
+  background: rgba(0, 0, 0, .02); font-size: 12.5px; line-height: 1.65;
+}
+.meta-panel.ok   { border-color: #6b9c7d; }
+.meta-panel.warn { border-color: #c49a3f; }
+.meta-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+.meta-code { font-family: ui-monospace, monospace; font-weight: 700; font-size: 13px; }
+.meta-sum  { font-size: 11.5px; color: var(--ink3, #888); font-family: ui-monospace, monospace; }
+.meta-line { margin: 2px 0; }
+.warn-line { color: #9a6516; }
+
+/* 공개 기준 게이트 */
+.gate {
+  margin: 12px 0; padding: 9px 14px; font-size: 12.5px; font-weight: 600;
+  border: 1px solid;
+}
+.gate.pass { color: #2f6b45; border-color: #b6d5c2; background: #f2f8f4; }
+.gate.fail { color: #8c2f2f; border-color: #e0bcbc; background: #fdf5f5; }
+
+/* 확정 버튼 */
+.btn.confirm { background: #2f6b45; color: #fff; border-color: #2f6b45; }
+.btn.confirm:hover:not(:disabled) { background: #255538; }
+
+/* 알림 */
+.notice { font-size: 12.5px; color: #2f6b45; margin: 6px 0 0; }
+
+/* 회차 목록 */
+.ep-list { margin-top: 18px; }
+.ep-list h3 { font-size: 12px; letter-spacing: .04em; color: var(--ink3, #888); margin: 0 0 8px; }
+.ep-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.ep-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline;
+  padding: 6px 8px; font-size: 12px; background: rgba(0, 0, 0, .02);
+}
+.ep-label  { font-family: ui-monospace, monospace; }
+.ep-status { font-size: 10.5px; padding: 1px 6px; border-radius: 2px; background: #eee; color: #666; }
+.ep-row.s-confirmed .ep-status { background: #e3f0e8; color: #2f6b45; }
+.ep-row.s-published .ep-status { background: #e6ecf5; color: #2f4a6b; }
+.ep-chars  { font-size: 11px; color: var(--ink3, #888); font-variant-numeric: tabular-nums; }
+
+/* 연령 확인 */
+.issue.age-ok { border-left-color: #6b9c7d; }
+.issue.age-no { border-left-color: #8c2f2f; background: #fdf5f5; }
