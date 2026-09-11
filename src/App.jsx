@@ -43,6 +43,49 @@ function saveLocal(works) {
   localStorage.setItem(STORE_KEY, JSON.stringify(works))
 }
 
+/**
+ * 로컬과 클라우드 작품을 합친다.
+ * 같은 id끼리는 문서마다 '내용이 있는 쪽'을 고른다.
+ * 빈 클라우드 기록이 로컬 원고를 덮어쓰는 사고를 막는 것이 이 함수의 유일한 목적이다.
+ */
+function mergeWorks(local, remote) {
+  const out = new Map()
+  for (const l of local) out.set(l.id, l)
+
+  for (const r of remote) {
+    const l = out.get(r.id)
+    if (!l) {
+      out.set(r.id, r)
+      continue
+    }
+    const docs = {}
+    for (const k of DOC_KEYS) {
+      const rv = (r.docs?.[k] || '').trim()
+      const lv = (l.docs?.[k] || '').trim()
+      docs[k] = rv.length >= lv.length ? r.docs[k] || '' : l.docs[k] || ''
+    }
+    out.set(r.id, {
+      ...l,
+      ...r,
+      docs,
+      timeline: r.timeline?.length ? r.timeline : l.timeline || [],
+      lastReview: l.lastReview
+    })
+  }
+  return [...out.values()]
+}
+
+/** 제목이 같은데 id가 다른 작품 — 로컬 등록분과 클라우드 시드가 겹친 경우 */
+function findDuplicateTitles(works) {
+  const byTitle = new Map()
+  for (const w of works) {
+    const t = (w.title || '').trim()
+    if (!t) continue
+    byTitle.set(t, [...(byTitle.get(t) || []), w])
+  }
+  return [...byTitle.entries()].filter(([, list]) => list.length > 1)
+}
+
 export default function App() {
   // ── 인증 ──
   const [session, setSession] = useState(null)
@@ -82,6 +125,8 @@ export default function App() {
     [works, selectedId]
   )
 
+  const duplicates = useMemo(() => findDuplicateTitles(works), [works])
+
   const charCount = stripMetaBlock(manuscript).replace(/\s/g, '').length
   const charCountRaw = stripMetaBlock(manuscript).length
   const parsed = useMemo(() => (manuscript.trim() ? parseMeta(manuscript) : null), [manuscript])
@@ -99,17 +144,16 @@ export default function App() {
   }, [])
 
   // ── 로그인 뒤 클라우드에서 작품 당겨오기 ──
+  //
+  // 병합 원칙: 빈 클라우드 기록이 내용 있는 로컬 문서를 절대 덮어쓰지 않는다.
+  // schema.sql이 만든 껍데기 작품이 로컬 원고를 날리는 사고를 막기 위한 것이다.
   const pullCloud = useCallback(async () => {
     if (!cloud.cloudEnabled || !session) return
     setSyncing(true)
     try {
       const remote = await cloud.fetchWorks()
       if (remote?.length) {
-        setWorks((local) => {
-          const byId = new Map(remote.map((w) => [w.id, normalizeWork(w)]))
-          for (const l of local) if (!byId.has(l.id)) byId.set(l.id, l)
-          return [...byId.values()]
-        })
+        setWorks((local) => mergeWorks(local, remote.map(normalizeWork)))
       }
     } catch (e) {
       setError(e.message)
@@ -427,6 +471,21 @@ export default function App() {
             </button>
           </div>
 
+          {duplicates.length > 0 && (
+            <div className="dup-warn">
+              <strong>제목이 겹치는 작품이 있습니다.</strong>
+              {duplicates.map(([title, list]) => (
+                <p key={title}>
+                  『{title}』 {list.length}개 — 내용이 있는 쪽을 남기고 빈 쪽을 지우세요.
+                  작품을 눌러 문서 편집으로 확인할 수 있습니다.
+                </p>
+              ))}
+              <p className="dup-note">
+                앱에서 등록한 작품과 클라우드에 미리 심어둔 작품이 서로 다른 식별자를 갖기 때문에 생깁니다.
+              </p>
+            </div>
+          )}
+
           <ul className="work-list">
             {works.map((w) => (
               <li key={w.id}>
@@ -440,7 +499,10 @@ export default function App() {
                   }}
                 >
                   <span className="work-title">{w.title}</span>
-                  <span className="work-meta">타임라인 {w.timeline.length}건</span>
+                  <span className="work-meta">
+                    문서 {DOC_KEYS.reduce((n, k) => n + ((w.docs?.[k] || '').trim() ? 1 : 0), 0)}/6 ·
+                    타임라인 {w.timeline.length}건
+                  </span>
                 </button>
               </li>
             ))}
