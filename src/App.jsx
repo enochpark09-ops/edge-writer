@@ -322,6 +322,17 @@ export default function App() {
       }
       if (p?.settings?.length) await cloud.syncSettings(work.id, p.settings, label)
 
+      // 확정하면 타임라인도 함께 반영한다. 버튼을 두 번 누르게 하지 않는다.
+      // 타임라인요약은 감(監)만 만들므로, 감수 없이 확정하면 이 단계는 건너뛴다.
+      if (status === 'confirmed' && report?.타임라인요약 && !timelineApplied) {
+        const entry = `${label}: ${report.타임라인요약}`
+        updateWork(work.id, (w) => ({
+          ...w,
+          timeline: w.timeline.includes(entry) ? w.timeline : [...w.timeline, entry]
+        }))
+        setTimelineApplied(true)
+      }
+
       setEpisodes(await cloud.fetchEpisodes(work.id))
     } catch (e) {
       setError(e.message)
@@ -676,6 +687,7 @@ export default function App() {
                 <button
                   className="btn confirm"
                   onClick={() => {
+                    if (!report?.타임라인요약 && !confirm('감(監) 감수를 아직 돌리지 않았습니다.\n지금 확정하면 이 회차에 타임라인 요약이 비어 있게 되고, 다음 회차 감수가 이 회차를 참고하지 못합니다.\n\n그래도 확정할까요?')) return
                     if (blocking > 0 && !confirm(`고·중 심각도 지적이 ${blocking}건 남아 있습니다. 그래도 확정할까요?\n(감수는 자문이며 결정은 대표가 합니다)`)) return
                     persistEpisode('confirmed')
                   }}
@@ -859,8 +871,13 @@ export default function App() {
               {report.타임라인요약 && (
                 <div className="timeline-apply">
                   <p className="tl-summary"><span>타임라인 요약</span> {report.타임라인요약}</p>
-                  <button className="btn primary" onClick={applyTimeline} disabled={timelineApplied}>
-                    {timelineApplied ? '타임라인 반영 완료' : '타임라인 반영'}
+                  <button
+                    className="btn primary"
+                    onClick={applyTimeline}
+                    disabled={timelineApplied}
+                    title="원고 확정을 누르면 자동으로 반영됩니다. 확정하지 않고 타임라인에만 넣고 싶을 때 쓰세요."
+                  >
+                    {timelineApplied ? '타임라인 반영 완료' : '타임라인만 반영'}
                   </button>
                 </div>
               )}
