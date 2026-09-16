@@ -318,6 +318,7 @@ input, textarea { font-family: var(--sans); color: var(--ink); }
 }
 .cloud-chip.on  { color: #2f6b45; border-color: #b6d5c2; background: #f2f8f4; }
 .cloud-chip.off { color: #8a8279; border-color: #ddd6cd; background: #f7f5f2; }
+.cloud-chip.warn{ color: #8a5a1f; border-color: #e0c79a; background: #fbf4e8; }
 
 /* 감수 종류 선택 */
 .kind-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -359,14 +360,45 @@ input, textarea { font-family: var(--sans); color: var(--ink); }
 /* 알림 */
 .notice { font-size: 12.5px; color: #2f6b45; margin: 6px 0 0; }
 
+/* 불러온 원고 표시 */
+.loaded-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 8px; padding: 7px 10px; font-size: 12px;
+  border-left: 3px solid #6b9c7d; background: #f2f8f4; color: #2f6b45;
+}
+.loaded-bar.past { border-left-color: #c79a4a; background: #fbf4e8; color: #8a5a1f; }
+
 /* 회차 목록 */
 .ep-list { margin-top: 18px; }
 .ep-list h3 { font-size: 12px; letter-spacing: .04em; color: var(--ink3, #888); margin: 0 0 8px; }
 .ep-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
 .ep-row {
-  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline;
-  padding: 6px 8px; font-size: 12px; background: rgba(0, 0, 0, .02);
+  display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: baseline;
+  padding: 4px 6px; font-size: 12px; background: rgba(0, 0, 0, .02);
 }
+.ep-open {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline;
+  width: 100%; padding: 2px 2px; border: 0; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.ep-open:hover .ep-label { text-decoration: underline; }
+.ep-hist {
+  border: 0; background: none; cursor: pointer; font-size: 10.5px;
+  color: var(--ink3, #888); padding: 2px 4px;
+}
+.ep-hist:hover { color: var(--ink, #222); }
+.ver-list {
+  grid-column: 1 / -1; margin: 4px 0 2px; padding: 0 0 0 10px;
+  border-left: 1px solid #ddd6cd; display: flex; flex-direction: column; gap: 1px;
+}
+.ver-list button {
+  display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: baseline;
+  width: 100%; border: 0; background: none; cursor: pointer; font: inherit;
+  font-size: 11px; color: var(--ink3, #888); text-align: left; padding: 2px 4px;
+}
+.ver-list button:hover { background: rgba(0, 0, 0, .03); color: var(--ink, #222); }
+.ver-list em { font-style: normal; font-size: 10px; color: #2f6b45; }
+.ver-list span, .ver-list time { font-variant-numeric: tabular-nums; }
 .ep-label  { font-family: ui-monospace, monospace; }
 .ep-status { font-size: 10.5px; padding: 1px 6px; border-radius: 2px; background: #eee; color: #666; }
 .ep-row.s-confirmed .ep-status { background: #e3f0e8; color: #2f6b45; }

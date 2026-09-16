@@ -115,6 +115,10 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
+  const [loadedFrom, setLoadedFrom] = useState(null)   // {label, version|null}
+  const [versions, setVersions] = useState([])
+  const [versionsFor, setVersionsFor] = useState(null)
+  const [cloudDown, setCloudDown] = useState(false)
   const [showTimeline, setShowTimeline] = useState(false)
   const [timelineApplied, setTimelineApplied] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -169,8 +173,72 @@ export default function App() {
   // ── 회차 목록 ──
   useEffect(() => {
     if (!session || !work?.id) return setEpisodes([])
-    cloud.fetchEpisodes(work.id).then(setEpisodes).catch((e) => setError(e.message))
+    cloud
+      .withAuthRetry(() => cloud.fetchEpisodes(work.id))
+      .then((rows) => {
+        setEpisodes(rows)
+        setCloudDown(false)
+      })
+      .catch((e) => {
+        setCloudDown(true)
+        setError(e.message)
+      })
   }, [session, work?.id])
+
+  // ── 저장된 회차 불러오기 ──
+  async function openEpisode(ep) {
+    setError('')
+    try {
+      const row = await cloud.withAuthRetry(() => cloud.fetchEpisodeBody(ep.id))
+      if (!row) return
+      setManuscript(row.body || '')
+      setEpisodeLabel(row.label || '')
+      setSavedEpisode(row)
+      setReport(null)
+      setTimelineApplied(false)
+      setLoadedFrom({ label: row.label, version: null })
+      setVersionsFor(null)
+      setVersions([])
+      setCloudDown(false)
+      flash(`${row.label} 불러왔습니다.`)
+    } catch (e) {
+      if (e.authExpired) setCloudDown(true)
+      setError(e.message)
+    }
+  }
+
+  async function toggleVersions(ep) {
+    if (versionsFor === ep.id) {
+      setVersionsFor(null)
+      setVersions([])
+      return
+    }
+    setError('')
+    try {
+      const rows = await cloud.withAuthRetry(() => cloud.fetchVersions(ep.id))
+      setVersionsFor(ep.id)
+      setVersions(rows)
+      if (rows.length === 0) flash('아직 개정 이력이 없습니다. 이 회차는 한 번만 저장되었습니다.')
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function openVersion(ep, version) {
+    setError('')
+    try {
+      const row = await cloud.withAuthRetry(() => cloud.fetchVersionBody(ep.id, version))
+      if (!row) return
+      setManuscript(row.body || '')
+      setEpisodeLabel(ep.label || '')
+      setSavedEpisode(null)          // 과거본은 덮어쓰기 대상이 아니다
+      setReport(null)
+      setTimelineApplied(false)
+      setLoadedFrom({ label: ep.label, version })
+    } catch (e) {
+      setError(e.message)
+    }
+  }
 
   function updateWork(id, updater) {
     setWorks((prev) => prev.map((w) => (w.id === id ? updater(w) : w)))
@@ -459,7 +527,9 @@ export default function App() {
               <span className="cloud-chip off">로컬 전용</span>
             ) : session ? (
               <>
-                <span className="cloud-chip on">{syncing ? '동기화 중…' : '클라우드 연결됨'}</span>
+                <span className={'cloud-chip ' + (cloudDown ? 'warn' : 'on')}>
+                  {cloudDown ? '클라우드 끊김 · 로컬만 표시 중' : syncing ? '동기화 중…' : '클라우드 연결됨'}
+                </span>
                 <button className="btn ghost sm" onClick={() => cloud.signOut()}>
                   로그아웃
                 </button>
@@ -554,11 +624,38 @@ export default function App() {
               <ul>
                 {episodes.map((e) => (
                   <li key={e.id} className={'ep-row s-' + e.status}>
-                    <span className="ep-label">{e.label}</span>
-                    <span className="ep-status">{
-                      { draft: '초고', review: '감수중', confirmed: '확정', published: '발행' }[e.status]
-                    }</span>
-                    <span className="ep-chars">{(e.char_count || 0).toLocaleString()}자</span>
+                    <button
+                      className="ep-open"
+                      onClick={() => openEpisode(e)}
+                      title="편집창으로 불러오기"
+                    >
+                      <span className="ep-label">{e.label}</span>
+                      <span className="ep-status">{
+                        { draft: '초고', review: '감수중', confirmed: '확정', published: '발행' }[e.status]
+                      }</span>
+                      <span className="ep-chars">{(e.char_count || 0).toLocaleString()}자</span>
+                    </button>
+                    <button
+                      className="ep-hist"
+                      onClick={() => toggleVersions(e)}
+                      title="개정 이력"
+                    >
+                      {versionsFor === e.id ? '이력 ▲' : '이력 ▼'}
+                    </button>
+                    {versionsFor === e.id && versions.length > 0 && (
+                      <ul className="ver-list">
+                        {versions.map((v) => (
+                          <li key={v.version}>
+                            <button onClick={() => openVersion(e, v.version)}>
+                              v{v.version}
+                              {v.was_confirmed && <em>확정본</em>}
+                              <span>{(v.char_count || 0).toLocaleString()}자</span>
+                              <time>{new Date(v.created_at).toLocaleDateString('ko-KR')}</time>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -610,6 +707,28 @@ export default function App() {
               </button>
             ))}
           </div>
+
+          {loadedFrom && (
+            <div className={'loaded-bar' + (loadedFrom.version ? ' past' : '')}>
+              <span>
+                {loadedFrom.version
+                  ? `${loadedFrom.label} · v${loadedFrom.version} (과거본 — 저장하면 새 버전이 됩니다)`
+                  : `${loadedFrom.label} 불러옴 — 클라우드 최신본`}
+              </span>
+              <button
+                className="btn ghost sm"
+                onClick={() => {
+                  setLoadedFrom(null)
+                  setManuscript('')
+                  setEpisodeLabel('')
+                  setSavedEpisode(null)
+                  setReport(null)
+                }}
+              >
+                새 원고
+              </button>
+            </div>
+          )}
 
           <div className="input-row">
             <input
@@ -936,7 +1055,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v2.0 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관
+        edge writer v2.2 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관 · 개정 이력
       </footer>
     </div>
   )

@@ -14,6 +14,28 @@ const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 export const cloudEnabled = Boolean(URL && ANON)
 
+/**
+ * 토큰이 거절되는 오류(시계 어긋남, 만료)를 한 번만 자동 복구한다.
+ * 'JWT issued at future'는 PC 시계가 서버보다 앞설 때 나온다. 세션을
+ * 새로 받으면 풀리므로, 사용자가 로그아웃/재로그인을 손으로 할 이유가 없다.
+ */
+const AUTH_ERR = /JWT|jwt|issued at future|token is expired|invalid claim|PGRST301|401/
+
+export async function withAuthRetry(fn) {
+  try {
+    return await fn()
+  } catch (e) {
+    if (!cloudEnabled || !AUTH_ERR.test(String(e?.message || ''))) throw e
+    const { error } = await supabase.auth.refreshSession()
+    if (error) {
+      const err = new Error('클라우드 인증이 만료됐습니다. PC 시계를 동기화한 뒤 다시 로그인해 주세요.')
+      err.authExpired = true
+      throw err
+    }
+    return await fn()
+  }
+}
+
 export const supabase = cloudEnabled
   ? createClient(URL, ANON, {
       auth: { persistSession: true, autoRefreshToken: true }
@@ -136,6 +158,19 @@ export async function fetchEpisodes(workId) {
     .order('no')
   if (error) throw new Error(`회차 목록 실패: ${error.message}`)
   return data || []
+}
+
+/** 개정 이력의 특정 버전 본문을 읽는다. */
+export async function fetchVersionBody(episodeId, version) {
+  if (!cloudEnabled) return null
+  const { data, error } = await supabase
+    .from('episode_versions')
+    .select('version, body, meta_raw, char_count, was_confirmed, created_at')
+    .eq('episode_id', episodeId)
+    .eq('version', version)
+    .single()
+  if (error) throw new Error(`개정본 읽기 실패: ${error.message}`)
+  return data
 }
 
 export async function fetchEpisodeBody(id) {
