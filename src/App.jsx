@@ -917,7 +917,39 @@ export default function App() {
                     </span>
                   </div>
                 )}
+                {report.무대체크 && (
+                  <div
+                    className={
+                      'quick' +
+                      (report.무대체크.반복경고 || report.무대체크.시야경고 ? ' fail' : ' pass')
+                    }
+                  >
+                    <span className="quick-label">무대</span>
+                    <span className="quick-value">
+                      {report.무대체크.반복경고 ? '반복 경고' : '반복 정상'}
+                      {' · '}
+                      {report.무대체크.시야경고 ? '시야 좁음' : '시야 정상'}
+                      {(report.무대체크.신규인물?.length ?? 0) > 0
+                        ? ` · 신규 ${report.무대체크.신규인물.join(', ')}`
+                        : ' · 신규 인물 없음'}
+                      {report.무대체크.코멘트 ? ` — ${report.무대체크.코멘트}` : ''}
+                    </span>
+                  </div>
+                )}
               </div>
+
+              {(report.무대체크?.최근5회무대?.length ?? 0) > 0 && (
+                <div className="issue-section">
+                  <h4>
+                    최근 5회 무대<span className="count">{report.무대체크.최근5회무대.length}</span>
+                  </h4>
+                  {report.무대체크.최근5회무대.map((s, i) => (
+                    <div className="issue" key={i}>
+                      <p className="issue-body">{s}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {(report.연령확인?.length ?? 0) > 0 && (
                 <div className="issue-section">
