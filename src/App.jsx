@@ -349,8 +349,12 @@ export default function App() {
     }
   }
 
+  // v2.7 — 확정된 회차를 불러와 고치는 중인가
+  const editingConfirmed =
+    !!savedEpisode && savedEpisode.status === 'confirmed' && savedEpisode.label === episodeLabel.trim()
+
   // ── 원고 저장 / 확정 ──
-  async function persistEpisode(status) {
+  async function persistEpisode(status, { revision = false } = {}) {
     if (!session) return setError('클라우드 로그인이 필요합니다.')
     if (!manuscript.trim()) return setError('원고가 비어 있습니다.')
     const label = episodeLabel.trim()
@@ -372,6 +376,10 @@ export default function App() {
         body: manuscript,
         metaRaw: p?.ok || p?.meta ? JSON.stringify(p.meta) : null,
         meta: {
+          // v2.7 — 수정본 저장 시 기존 타임라인 요약을 잃지 않는다.
+          ...(savedEpisode?.label === label && savedEpisode?.meta?.타임라인요약
+            ? { 타임라인요약: savedEpisode.meta.타임라인요약 }
+            : {}),
           ...(p?.meta || {}),
           ...(report?.타임라인요약 ? { 타임라인요약: report.타임라인요약 } : {})
         },
@@ -380,19 +388,21 @@ export default function App() {
       })
       setSavedEpisode(saved)
 
+      const head = revision ? '수정본 저장(확정 유지)' : status === 'confirmed' ? '확정 저장' : '임시 저장'
       if (p?.plants?.length) {
         const r = await cloud.syncPlants(work.id, p.plants, saved.id, label)
         flash(
-          `${status === 'confirmed' ? '확정 저장' : '임시 저장'} 완료 · 떡밥 ${r.created}건 신규, ${r.updated}건 갱신`
+          `${head} 완료 · 떡밥 ${r.created}건 신규, ${r.updated}건 갱신` +
+            (r.kept ? ` · ${r.kept}건은 뒤 회차 상태 유지` : '')
         )
       } else {
-        flash(status === 'confirmed' ? '확정 원고를 저장했습니다.' : '임시 저장했습니다.')
+        flash(`${head} 완료`)
       }
       if (p?.settings?.length) await cloud.syncSettings(work.id, p.settings, label)
 
       // 확정하면 타임라인도 함께 반영한다. 버튼을 두 번 누르게 하지 않는다.
       // 타임라인요약은 감(監)만 만들므로, 감수 없이 확정하면 이 단계는 건너뛴다.
-      if (status === 'confirmed' && report?.타임라인요약 && !timelineApplied) {
+      if (status === 'confirmed' && !revision && report?.타임라인요약 && !timelineApplied) {
         const entry = `${label}: ${report.타임라인요약}`
         updateWork(work.id, (w) => ({
           ...w,
@@ -713,7 +723,9 @@ export default function App() {
               <span>
                 {loadedFrom.version
                   ? `${loadedFrom.label} · v${loadedFrom.version} (과거본 — 저장하면 새 버전이 됩니다)`
-                  : `${loadedFrom.label} 불러옴 — 클라우드 최신본`}
+                  : editingConfirmed
+                    ? `${loadedFrom.label} 확정 원고 — 고친 뒤 「수정본 저장(확정 유지)」을 누르세요. 이전 원고는 이력에 남습니다`
+                    : `${loadedFrom.label} 불러옴 — 클라우드 최신본`}
               </span>
               <button
                 className="btn ghost sm"
@@ -798,7 +810,17 @@ export default function App() {
             >
               재감수
             </button>
-            {session && (
+            {session && editingConfirmed && (
+              <button
+                className="btn confirm"
+                onClick={() => persistEpisode('confirmed', { revision: true })}
+                disabled={loading}
+                title="확정 상태를 유지한 채 덮어씁니다. 이전 원고는 개정 이력에 남습니다."
+              >
+                수정본 저장(확정 유지)
+              </button>
+            )}
+            {session && !editingConfirmed && (
               <>
                 <button className="btn ghost" onClick={() => persistEpisode('review')} disabled={loading}>
                   임시 저장
@@ -1087,7 +1109,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v2.2 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관 · 개정 이력
+        edge writer v2.7 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관 · 개정 이력
       </footer>
     </div>
   )

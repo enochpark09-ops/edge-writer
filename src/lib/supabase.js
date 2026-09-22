@@ -281,7 +281,7 @@ export function countBlocking(report) {
 
 /** 메타 블록에서 뽑은 떡밥을 장부에 반영한다. 상태 변화는 이벤트로 남는다. */
 export async function syncPlants(workId, plants, episodeId, episodeLabel) {
-  if (!cloudEnabled || !plants?.length) return { updated: 0, created: 0 }
+  if (!cloudEnabled || !plants?.length) return { updated: 0, created: 0, kept: 0 }
 
   const codes = plants.map((p) => p.code)
   const { data: existing } = await supabase
@@ -292,37 +292,66 @@ export async function syncPlants(workId, plants, episodeId, episodeLabel) {
   const known = new Set((existing || []).map((r) => r.code))
 
   const { part, no } = splitLabel(episodeLabel)
+  const here = (part ?? 1) * 10000 + (no ?? 0)
 
-  const rows = plants.map((p) => ({
-    work_id: workId,
-    code: p.code,
-    name: p.name,
-    status: p.status,
-    due_part: p.duePart,
-    due_no: p.dueNo,
-    ...(known.has(p.code) ? {} : { planted_part: part, planted_no: no }),
-    ...(p.status === 'resolved' ? { resolved_part: part, resolved_no: no } : {}),
-    updated_at: new Date().toISOString()
-  }))
+  // v2.7 — 떡밥 상태 역행 방지.
+  // 옛 회차를 다시 저장할 때, 더 뒤 회차가 이미 바꿔 놓은 떡밥 상태를 옛 값으로 덮어쓰지 않는다.
+  // 각 떡밥이 마지막으로 등장한 회차는 plant_events.note(회차 표기)에서 읽는다.
+  const { data: events } = await supabase
+    .from('plant_events')
+    .select('code, note')
+    .eq('work_id', workId)
+    .in('code', codes)
+  const latest = new Map()
+  const seen = new Set()
+  for (const ev of events || []) {
+    seen.add(`${ev.code}|${ev.note}`)
+    const l = splitLabel(ev.note)
+    const k = (l.part ?? 1) * 10000 + (l.no ?? 0)
+    if (!latest.has(ev.code) || latest.get(ev.code) < k) latest.set(ev.code, k)
+  }
+  const isStale = (code) => latest.has(code) && latest.get(code) > here
 
-  const { error } = await supabase
-    .from('plants')
-    .upsert(rows, { onConflict: 'work_id,code' })
-  if (error) throw new Error(`떡밥 저장 실패: ${error.message}`)
-
-  await supabase.from('plant_events').insert(
-    plants.map((p) => ({
+  const rows = plants
+    .filter((p) => !isStale(p.code))
+    .map((p) => ({
       work_id: workId,
       code: p.code,
-      episode_id: episodeId || null,
-      action: p.status,
-      note: episodeLabel
+      name: p.name,
+      status: p.status,
+      due_part: p.duePart,
+      due_no: p.dueNo,
+      ...(known.has(p.code) ? {} : { planted_part: part, planted_no: no }),
+      ...(p.status === 'resolved' ? { resolved_part: part, resolved_no: no } : {}),
+      updated_at: new Date().toISOString()
     }))
-  )
 
+  if (rows.length) {
+    const { error } = await supabase
+      .from('plants')
+      .upsert(rows, { onConflict: 'work_id,code' })
+    if (error) throw new Error(`떡밥 저장 실패: ${error.message}`)
+  }
+
+  // 같은 회차를 다시 저장해도 이력이 두 번 쌓이지 않게 한다.
+  const fresh = plants.filter((p) => !seen.has(`${p.code}|${episodeLabel}`))
+  if (fresh.length) {
+    await supabase.from('plant_events').insert(
+      fresh.map((p) => ({
+        work_id: workId,
+        code: p.code,
+        episode_id: episodeId || null,
+        action: p.status,
+        note: episodeLabel
+      }))
+    )
+  }
+
+  const kept = plants.filter((p) => isStale(p.code)).length
   return {
     created: plants.filter((p) => !known.has(p.code)).length,
-    updated: plants.filter((p) => known.has(p.code)).length
+    updated: plants.filter((p) => known.has(p.code) && !isStale(p.code)).length,
+    kept
   }
 }
 
