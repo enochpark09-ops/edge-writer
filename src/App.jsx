@@ -13,7 +13,9 @@ const DOC_FIELDS = [
   ['characters', '인물집', '주요 인물 프로필, 나이, 말버릇, 관계, 아크…'],
   ['roadmap', '로드맵', '10화 단위로 갱신하는 화별 중장기 계획. 앞부분은 지우지 않고 누적…'],
   ['schema', '메타스키마', '회차 말미 메타 블록의 형식 규약. 자동화의 인터페이스이므로 형식을 고정한다…'],
-  ['ledger', '떡밥장부', '떡밥 ID 발급 대장과 회수 예정. 회차마다 갱신되는 살아 있는 문서…']
+  ['ledger', '떡밥장부', '떡밥 ID 발급 대장과 회수 예정. 회차마다 갱신되는 살아 있는 문서…'],
+  ['craft', '집필기법', '인물 입체성·호흡·공간의 정량 규율. 도목수와 배우가 조항 번호로 지적한다…'],
+  ['canon', '고증바이블', '배경 연대의 고증 기준과 작품이 의도적으로 어기는 지점 목록…']
 ]
 const DOC_KEYS = DOC_FIELDS.map(([k]) => k)
 const EMPTY_DOCS = Object.fromEntries(DOC_KEYS.map((k) => [k, '']))
@@ -591,7 +593,7 @@ export default function App() {
                 >
                   <span className="work-title">{w.title}</span>
                   <span className="work-meta">
-                    문서 {DOC_KEYS.reduce((n, k) => n + ((w.docs?.[k] || '').trim() ? 1 : 0), 0)}/6 ·
+                    문서 {DOC_KEYS.reduce((n, k) => n + ((w.docs?.[k] || '').trim() ? 1 : 0), 0)}/{DOC_KEYS.length} ·
                     타임라인 {w.timeline.length}건
                   </span>
                 </button>
@@ -1109,7 +1111,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v2.7 · 감수 3종(감·어사·도목수) · 문서 6종 · 확정 원고 클라우드 보관 · 개정 이력
+        edge writer v2.8 · 감수 4종(감·어사·도목수·배우) · 문서 8종 · 확정 원고 클라우드 보관 · 개정 이력
       </footer>
     </div>
   )

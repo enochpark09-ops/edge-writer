@@ -42,7 +42,7 @@ export const supabase = cloudEnabled
     })
   : null
 
-const DOC_SLUGS = ['plan', 'world', 'characters', 'roadmap', 'schema', 'ledger']
+const DOC_SLUGS = ['plan', 'world', 'characters', 'roadmap', 'schema', 'ledger', 'craft', 'canon']
 
 // ─── 인증 ────────────────────────────────────────────────
 
