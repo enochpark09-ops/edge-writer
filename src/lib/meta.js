@@ -6,7 +6,8 @@
 //
 // 형식 정의는 작품 문서 5번(메타스키마)에 있다.
 
-const BLOCK_RE = /###\s*메타\s*·\s*SCHEMA\s*v1\s*\n([\s\S]*)$/
+// v2.9: 'SCHEMA v1'만 읽던 것을 버전 무관으로 넓혔다. 1화 v4는 'SCHEMA v3.0'을 써서 파싱되지 않고 있었다.
+const BLOCK_RE = /###\s*메타\s*·\s*SCHEMA\s*v[\d.]+\s*\n([\s\S]*)$/
 const FIELD = ' | '
 
 /** 원고에서 메타 블록만 잘라낸다. 없으면 null. */
@@ -97,6 +98,16 @@ function parsePlantLine(line) {
   }
 }
 
+/** '끝[절단] | 보상[통쾌] | 최장최단[3.1배] | 침묵[2]' → 객체 (메타스키마 v3.1 @호흡) */
+function parseBrackets(raw) {
+  const out = {}
+  for (const part of raw.split('|')) {
+    const m = part.trim().match(/^([^\[\]]+)\[(.*)\]$/)
+    if (m) out[m[1].trim()] = m[2].trim()
+  }
+  return out
+}
+
 /** '1부-003' → {part:1, no:3} */
 export function parseEpisodeCode(raw) {
   const m = String(raw || '').match(/(\d+)\s*부\s*[-\s]?\s*0*(\d+)/)
@@ -176,6 +187,19 @@ export function parseMeta(manuscript) {
               : []
           break
         }
+        case '엔진': {
+          // '두만 | 명부에 이름을 올린다 | 옥저는 왕이 없다'
+          const [who, want, block] = value.split(FIELD).map((x) => (x || '').trim())
+          meta.엔진 = { 인물: who, 욕망: want, 장애: block }
+          break
+        }
+        case '호흡':
+          meta.호흡 = parseBrackets(value)
+          meta.호흡원문 = value
+          break
+        case '문체':
+          meta.문체 = parseBrackets(value)
+          break
         case '말버릇':
           meta.말버릇 = value
             .split('|')
@@ -207,6 +231,19 @@ export function parseMeta(manuscript) {
   // 검증 — 스키마가 요구하는 필수 항목
   for (const k of ['회차', '시점', '시기', '등장', '수위', '분량']) {
     if (meta[k] == null) warnings.push(`필수 항목 @${k}이(가) 없습니다.`)
+  }
+
+  // 메타스키마 v3.1 — 집필기법 v2.0 항목
+  if (meta.장면 != null || meta.호흡 != null) {
+    if (!meta.엔진) warnings.push('@엔진이 없습니다 (메타스키마 v3.1 · 집필기법 A-1).')
+    if (meta.호흡 && meta.호흡.끝 == null) {
+      warnings.push(
+        meta.호흡원문?.includes('미해결컷')
+          ? '@호흡이 v3.0 형식(미해결컷)입니다. v3.1은 끝[절단|반전|결심|위협|정서] | 보상[…]로 적습니다.'
+          : '@호흡에 끝[…]이 없습니다.'
+      )
+    }
+    if (meta.호흡 && !meta.호흡.보상) warnings.push('@호흡에 보상[…]이 없습니다 (집필기법 A-2).')
   }
 
   // 분량 자동 검산 — 메타에 적힌 값과 실제 본문 길이가 어긋나면 알린다

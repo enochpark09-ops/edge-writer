@@ -42,7 +42,7 @@ export const supabase = cloudEnabled
     })
   : null
 
-const DOC_SLUGS = ['plan', 'world', 'characters', 'roadmap', 'schema', 'ledger', 'craft', 'canon']
+const DOC_SLUGS = ['plan', 'outline', 'world', 'characters', 'roadmap', 'schema', 'ledger', 'craft', 'canon']
 
 // ─── 인증 ────────────────────────────────────────────────
 
@@ -122,9 +122,11 @@ export async function pushWork(work) {
     .upsert({ id: work.id, title: work.title, genre: work.genre || '' })
   if (we) throw new Error(`작품 저장 실패: ${we.message}`)
 
+  // v2.9: craft·canon의 제목이 빠져 있어 처음 저장할 때 title이 null로 들어가 실패하던 것을 고쳤다.
   const titles = {
-    plan: '기획안', world: '설정집', characters: '인물집',
-    roadmap: '로드맵', schema: '메타스키마', ledger: '떡밥장부'
+    plan: '기획안', outline: '전체줄거리', world: '설정집', characters: '인물집',
+    roadmap: '로드맵', schema: '메타스키마', ledger: '떡밥장부',
+    craft: '집필기법', canon: '고증바이블'
   }
 
   // 트리거가 문서 6칸을 자동 생성하므로 content만 갱신한다.
@@ -267,7 +269,11 @@ export async function saveReview({ workId, episodeId, kind, round, report }) {
 /** 기획안 6항 공개 기준 — 고·중 심각도 건수 */
 export function countBlocking(report) {
   if (!report) return 0
-  const buckets = ['설정오류', '인물불일치', '문체지적', '수위위반', '법무리스크', '구조지적']
+  // v2.9: 도목수의 호흡지적, 배우의 평면성·대사지적이 빠져 있었다. 독자의 이탈지점을 추가한다.
+  const buckets = [
+    '설정오류', '인물불일치', '문체지적', '수위위반', '법무리스크',
+    '구조지적', '호흡지적', '평면성지적', '대사지적', '이탈지점'
+  ]
   let n = 0
   for (const b of buckets) {
     for (const it of report[b] || []) {

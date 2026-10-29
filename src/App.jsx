@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { DEFAULT_WORK } from './defaultWork'
 import { reviewManuscript, REVIEW_KINDS } from './api'
 import { parseMeta, stripMetaBlock, summarizeLedgerChanges } from './lib/meta'
+import { computeStyle, STYLE_LIMITS, MAX_EOTDA_RUN } from './lib/style'
 import * as cloud from './lib/supabase'
 
 const STORE_KEY = 'edgewriter.works.v2'
@@ -9,12 +10,13 @@ const LEGACY_KEY = 'edgewriter.works.v1'
 
 const DOC_FIELDS = [
   ['plan', '기획안', '로그라인, 구조, 핵심 원칙, 수위 원칙, 떡밥 계획…'],
+  ['outline', '전체줄거리', '부별 엔진·물건·보상, 사슬 지도, 숨겨진 사실의 공개 시점. 도목수가 구조 판정에 쓴다…'],
   ['world', '설정집', '세계관 규칙, 지리, 제도, 풍속, 물건…'],
   ['characters', '인물집', '주요 인물 프로필, 나이, 말버릇, 관계, 아크…'],
   ['roadmap', '로드맵', '10화 단위로 갱신하는 화별 중장기 계획. 앞부분은 지우지 않고 누적…'],
   ['schema', '메타스키마', '회차 말미 메타 블록의 형식 규약. 자동화의 인터페이스이므로 형식을 고정한다…'],
   ['ledger', '떡밥장부', '떡밥 ID 발급 대장과 회수 예정. 회차마다 갱신되는 살아 있는 문서…'],
-  ['craft', '집필기법', '인물 입체성·호흡·공간의 정량 규율. 도목수와 배우가 조항 번호로 지적한다…'],
+  ['craft', '집필기법', 'v2.0 — 측정 대상은 "독자가 다음 화를 누르는가". 도목수와 배우가 조항 번호(A~L)로 지적한다…'],
   ['canon', '고증바이블', '배경 연대의 고증 기준과 작품이 의도적으로 어기는 지점 목록…']
 ]
 const DOC_KEYS = DOC_FIELDS.map(([k]) => k)
@@ -108,9 +110,9 @@ export default function App() {
   const [savedEpisode, setSavedEpisode] = useState(null)
 
   // ── 감수 ──
-  const [kind, setKind] = useState('gam')
+  const [kind, setKind] = useState('dokja')
   const [report, setReport] = useState(null)
-  const [reportKind, setReportKind] = useState('gam')
+  const [reportKind, setReportKind] = useState('dokja')
   const [reportEpisode, setReportEpisode] = useState('')
   const [prevScore, setPrevScore] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -136,6 +138,10 @@ export default function App() {
   const charCount = stripMetaBlock(manuscript).replace(/\s/g, '').length
   const charCountRaw = stripMetaBlock(manuscript).length
   const parsed = useMemo(() => (manuscript.trim() ? parseMeta(manuscript) : null), [manuscript])
+  const style = useMemo(
+    () => (manuscript.trim() ? computeStyle(stripMetaBlock(manuscript)) : null),
+    [manuscript]
+  )
 
   useEffect(() => saveLocal(works), [works])
 
@@ -796,6 +802,23 @@ export default function App() {
             </div>
           )}
 
+          {style && (
+            <div className={'meta-panel' + (style.warnings.length ? ' warn' : ' ok')}>
+              <div className="meta-head">
+                <span className="meta-code">문체 계측</span>
+                <span className="meta-sum">집필기법 v2.0 H · 1만 자당</span>
+              </div>
+              <p className="meta-line">
+                않았다 {style.per10k.않았다} (상한 {STYLE_LIMITS.않았다}) · 아니라 {style.per10k.아니라} (상한{' '}
+                {STYLE_LIMITS.아니라}) · '~었다.' 최대 연속 {style.eotdaMaxRun} (상한 {MAX_EOTDA_RUN}) · 평균 서술 문장{' '}
+                {style.avgSentence}자
+              </p>
+              {style.warnings.map((w, i) => (
+                <p className="meta-line warn-line" key={i}>{w}</p>
+              ))}
+            </div>
+          )}
+
           <div className="run-row">
             <button className="btn primary" onClick={() => runReview(false)} disabled={loading}>
               {loading ? '처리 중…' : `${REVIEW_KINDS[kind].name} 감수 실행`}
@@ -863,7 +886,7 @@ export default function App() {
                 </div>
                 <div className="score">
                   <span className="score-num">{report.점수}</span>
-                  <span className="score-label">/100</span>
+                  <span className="score-label">{reportKind === 'dokja' ? '% 다음 화' : '/100'}</span>
                   {prevScore != null && typeof report.점수 === 'number' && (
                     <span className={'score-delta' + (report.점수 >= prevScore ? ' up' : ' down')}>
                       {report.점수 >= prevScore ? '▲' : '▼'}
@@ -874,6 +897,12 @@ export default function App() {
               </div>
 
               <p className="verdict">{report.총평}</p>
+
+              {reportKind === 'dokja' && (report.이탈지점?.length ?? 0) > 0 && (
+                <div className="gate fail">
+                  독자 이탈 {report.이탈지점.length}건 — 재수정. 독자 판정은 다른 감수자의 통과보다 우선합니다 (집필기법 K-1)
+                </div>
+              )}
 
               <div className={'gate' + (blocking === 0 ? ' pass' : ' fail')}>
                 {blocking === 0
@@ -900,6 +929,48 @@ export default function App() {
               )}
 
               <div className="quick-row">
+                {report.보상 && (
+                  <div className={'quick' + (report.보상.종류 && report.보상.종류 !== '없음' ? ' pass' : ' fail')}>
+                    <span className="quick-label">보상</span>
+                    <span className="quick-value">
+                      {report.보상.종류 || '-'}{report.보상.내용 ? ` — ${report.보상.내용}` : ''}
+                    </span>
+                  </div>
+                )}
+                {report.첫문단 && (
+                  <div className={'quick' + (report.첫문단.붙잡힘 ? ' pass' : ' fail')}>
+                    <span className="quick-label">첫 문단</span>
+                    <span className="quick-value">
+                      {report.첫문단.붙잡힘 ? '붙잡힘' : '놓침'}{report.첫문단.코멘트 ? ` — ${report.첫문단.코멘트}` : ''}
+                    </span>
+                  </div>
+                )}
+                {report.끝판정 && (
+                  <div className={'quick' + (report.끝판정.다음화를누르는이유 ? ' pass' : ' fail')}>
+                    <span className="quick-label">회차 끝</span>
+                    <span className="quick-value">
+                      {report.끝판정.종류 || '-'} — {report.끝판정.다음화를누르는이유 || '다음 화를 누를 이유 없음'}
+                    </span>
+                  </div>
+                )}
+                {report.엔진판정 && (
+                  <div className={'quick' + (report.엔진판정.통과 ? ' pass' : ' fail')}>
+                    <span className="quick-label">엔진·보상</span>
+                    <span className="quick-value">
+                      {report.엔진판정.엔진 || '엔진 없음'} · 보상 {report.엔진판정.보상 || '-'}
+                      {report.엔진판정.새질문 ? ` · 질문 ${report.엔진판정.새질문}` : ''}
+                    </span>
+                  </div>
+                )}
+                {report.희극 && (
+                  <div className={'quick' + (report.희극.있음 ? ' pass' : ' fail')}>
+                    <span className="quick-label">희극</span>
+                    <span className="quick-value">
+                      {report.희극.있음 ? '있음' : '없음'}{report.희극.대목 ? ` — “${report.희극.대목}”` : ''}
+                      {report.희극.코멘트 ? ` ${report.희극.코멘트}` : ''}
+                    </span>
+                  </div>
+                )}
                 {report.분량판정 && (
                   <div className="quick">
                     <span className="quick-label">분량</span>
@@ -985,6 +1056,21 @@ export default function App() {
                         <span className="bait-state">{a.판정}</span>
                       </div>
                       <p className="issue-body">{a.장면}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(report.인물호감?.length ?? 0) > 0 && (
+                <div className="issue-section">
+                  <h4>인물 호감<span className="count">{report.인물호감.length}</span></h4>
+                  {report.인물호감.map((a, i) => (
+                    <div className={'issue age-' + (a.방향 === '좋아짐' ? 'ok' : a.방향 === '싫어짐' ? 'no' : '')} key={i}>
+                      <div className="issue-top">
+                        <span className="bait-name">{a.인물}</span>
+                        <span className="bait-state">{a.방향}</span>
+                      </div>
+                      <p className="issue-body">{a.이유}</p>
                     </div>
                   ))}
                 </div>
@@ -1111,7 +1197,7 @@ export default function App() {
       )}
 
       <footer className="foot">
-        edge writer v2.8 · 감수 4종(감·어사·도목수·배우) · 문서 8종 · 확정 원고 클라우드 보관 · 개정 이력
+        edge writer v2.9 · 감수 5종(독자·감·어사·도목수·배우) · 집필기법 v2.0 · 문서 9종 · 문체 계측 · 확정 원고 클라우드 보관
       </footer>
     </div>
   )

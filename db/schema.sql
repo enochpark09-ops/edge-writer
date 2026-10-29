@@ -163,7 +163,7 @@ create trigger trg_episode_snapshot
 -- ───────────────────────────────────────────────────────────
 
 do $$ begin
-  create type review_kind as enum ('gam', 'eosa', 'domoksu');
+  create type review_kind as enum ('gam', 'eosa', 'domoksu', 'baeu', 'dokja');
 exception when duplicate_object then null; end $$;
 
 create table if not exists reviews (
